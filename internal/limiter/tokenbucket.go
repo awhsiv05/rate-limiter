@@ -3,39 +3,36 @@ package limiter
 import (
 	"sync"
 	"time"
-
-	"github.com/benbjohnson/clock"
 )
 
 type TokenBucket struct {
 	capacity   int
-	refillRate float64 // assuming in seconds
+	refillRate float64 // assuming in per seconds
 	tokens     float64
 	lastRefill time.Time
 	mu         sync.Mutex
 	nowFunc    func() time.Time
 }
 
-func nowFunc(clock *clock.Mock) time.Time {
-	if clock == nil {
-		return time.Now()
-	}
-	return clock.Now()
-}
 func NewTokenBucket(capacity int, refillRate float64) *TokenBucket {
-	Bucket := &TokenBucket{capacity: capacity,
+	nowFunc := time.Now
+	var Bucket = &TokenBucket{capacity: capacity,
 		refillRate: refillRate,
 		tokens:     float64(capacity),
-		lastRefill: time.Now(),
+		lastRefill: nowFunc(),
 		mu:         sync.Mutex{},
-		nowFunc:    time.Now}
+		nowFunc:    nowFunc,
+	}
 	return Bucket
 }
 
 func (bucket *TokenBucket) Allow(n int) bool {
+	if n < 0 {
+		return false
+	}
 	bucket.mu.Lock()
 	defer bucket.mu.Unlock()
-	timeSinceLastRefill := time.Since(bucket.lastRefill).Seconds()
+	timeSinceLastRefill := (bucket.nowFunc().Sub(bucket.lastRefill)).Seconds()
 	tokens := min(bucket.tokens+(timeSinceLastRefill*bucket.refillRate), float64(bucket.capacity))
 	bucket.lastRefill = bucket.nowFunc()
 	bucket.tokens = tokens

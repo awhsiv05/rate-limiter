@@ -22,34 +22,142 @@ func (f *FakeClock) Advance(d time.Duration) {
 }
 
 func newTestBucket(capacity int, refillRate float64, fakeClock *FakeClock) *TokenBucket {
-	return &TokenBucket{capacity: capacity, refillRate: refillRate, tokens: float64(capacity), lastRefill: fakeClock.Now(), mu: sync.Mutex{}, nowFunc: fakeClock.Now}
+	return newTokenBucket(capacity, refillRate, fakeClock.Now)
 }
-func TestLimiter(t *testing.T) {
+
+func TestAllow_BurstThenDenied(t *testing.T) {
+	fakeClock := NewFakeClock(time.Unix(0, 0))
+	testBucket := newTestBucket(5, 1, fakeClock)
+
 	Tests := []struct {
 		name        string
 		n           int
 		expected    bool
 		forwardTime time.Duration
 	}{
-		{"Negative requests", -1, false, 250 * time.Millisecond},
-		{"Burst up to capacity", 5, true, 500 * time.Millisecond},
-		{"next request Denied for 1", 1, false, 1 * time.Second},
-		{"next request Denied for 2", 2, false, 1 * time.Second},
-		{"next request Denied for 3", 3, false, 1 * time.Second},
-		{"next request Denied for 4", 4, false, 1 * time.Second},
-		{"next request Denied for 5", 5, false, 2 * time.Second},
-		{"refilled after all the requests to 5", 5, true, 500 * time.Millisecond},
+		{"Burst up to capacity", 5, true, 0},
+		{"next request Denied for 1", 1, false, 0},
 	}
-	fakeClock := NewFakeClock(time.Now())
-	testBucket := newTestBucket(5, 1, fakeClock)
 
 	for _, test := range Tests {
 		t.Run(test.name, func(t *testing.T) {
 			actual := testBucket.Allow(test.n)
 			fakeClock.Advance(test.forwardTime)
-			if actual != test.expected {
-				t.Fatalf("got %t, want %t,capacity %f", actual, test.expected, testBucket.tokens)
+			if actual.Allowed != test.expected {
+				t.Errorf("got %t, want %t,capacity %f", actual.Allowed, test.expected, testBucket.tokens)
 			}
 		})
 	}
+}
+
+func TestRefillAfterOneSecond(t *testing.T) {
+	fakeClock := NewFakeClock(time.Unix(0, 0))
+	testBucket := newTestBucket(5, 1, fakeClock)
+
+	Tests := []struct {
+		name        string
+		n           int
+		expected    bool
+		forwardTime time.Duration
+	}{
+		{"Drain and wait 1 second", 5, true, 1 * time.Second},
+		{"next request Accepted for 1", 1, true, 0},
+		{"next request Denied for 1", 1, false, 0},
+	}
+
+	for _, test := range Tests {
+		t.Run(test.name, func(t *testing.T) {
+			actual := testBucket.Allow(test.n)
+			fakeClock.Advance(test.forwardTime)
+			if actual.Allowed != test.expected {
+				t.Errorf("got %t, want %t,capacity %f", actual.Allowed, test.expected, testBucket.tokens)
+			}
+		})
+	}
+}
+
+func TestNeverExceedsCapacity(t *testing.T) {
+	fakeClock := NewFakeClock(time.Unix(0, 0))
+	testBucket := newTestBucket(5, 1, fakeClock)
+
+	fakeClock.Advance(100 * time.Second)
+	result := testBucket.Allow(5)
+	if result.BadRequest || !result.Allowed {
+		t.Errorf("Allowed expected : %v | got : %v \n BadRequest expected : %v | got : %v \n ", true, result.Allowed, false, result.BadRequest)
+	}
+
+	result = testBucket.Allow(1)
+	if result.BadRequest || result.Allowed {
+		t.Errorf("Allowed expected : %v | got : %v \n BadRequest expected : %v | got : %v \n ", true, result.Allowed, false, result.BadRequest)
+	}
+}
+func TestZeroAndNegative(t *testing.T) {
+	fakeClock := NewFakeClock(time.Unix(0, 0))
+	testBucket := newTestBucket(5, 1, fakeClock)
+
+	Tests := []struct {
+		name        string
+		n           int
+		badRequest  bool
+		expected    bool
+		forwardTime time.Duration
+	}{
+		{"0 allow", 0, true, false, 0},
+		{"-ve allow", -1, true, false, 0},
+		{"n > capacity ", 1000, true, false, 0},
+	}
+
+	for _, test := range Tests {
+		t.Run(test.name, func(t *testing.T) {
+			actual := testBucket.Allow(test.n)
+			fakeClock.Advance(test.forwardTime)
+			if actual.BadRequest != test.badRequest || actual.Allowed != test.expected {
+				t.Errorf("Allowed expected : %v | got : %v \n BadRequest expected : %v | got : %v \n ", test.expected, actual.Allowed, test.badRequest, actual.BadRequest)
+			}
+		})
+	}
+}
+
+func TestRetryAfter(t *testing.T) {
+	fakeClock := NewFakeClock(time.Unix(0, 0))
+	initialTime := fakeClock.Now()
+	testBucket := newTestBucket(5, 1, fakeClock)
+
+	Tests := []struct {
+		name        string
+		n           int
+		badRequest  bool
+		expected    bool
+		retryAfter  time.Time
+		forwardTime time.Duration
+	}{
+		{"Burst up to capacity ", 5, false, true, initialTime, 0},
+		{"RetryAfter for 1 token", 1, false, false, initialTime.Add(1 * time.Second), 0},
+		{"RetryAfter for 2 token", 2, false, false, initialTime.Add(2 * time.Second), 0},
+		{"RetryAfter for 3 token", 3, false, false, initialTime.Add(3 * time.Second), 2 * time.Second},
+		{"RetryAfter for 2 token after wait", 2, false, true, initialTime.Add(2 * time.Second), 0},
+	}
+
+	for _, test := range Tests {
+		t.Run(test.name, func(t *testing.T) {
+			actual := testBucket.Allow(test.n)
+			fakeClock.Advance(test.forwardTime)
+			if actual.BadRequest != test.badRequest || actual.Allowed != test.expected || actual.WaitTill != test.retryAfter {
+				t.Errorf("Allowed expected : %v | got : %v \n BadRequest expected : %v | got : %v \n RetryAfter expected : %v | got : %v \n", test.expected, actual.Allowed, test.badRequest, actual.BadRequest, test.retryAfter, actual.WaitTill)
+			}
+		})
+	}
+}
+
+func TestRaceCondition(t *testing.T) {
+	testBucket := NewTokenBucket(5, 1)
+	var wg sync.WaitGroup
+	wg.Add(1000)
+	for range 1000 {
+		go func() {
+			defer wg.Done()
+			testBucket.Allow(1)
+		}()
+	}
+	wg.Wait()
 }

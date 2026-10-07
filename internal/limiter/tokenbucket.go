@@ -13,9 +13,16 @@ type TokenBucket struct {
 	mu         sync.Mutex
 	nowFunc    func() time.Time
 }
+type Result struct {
+	BadRequest bool
+	Allowed    bool
+	WaitTill   time.Time
+}
 
-func NewTokenBucket(capacity int, refillRate float64) *TokenBucket {
-	nowFunc := time.Now
+func newTokenBucket(capacity int, refillRate float64, nowFunc func() time.Time) *TokenBucket {
+	if nowFunc == nil {
+		nowFunc = time.Now
+	}
 	var Bucket = &TokenBucket{capacity: capacity,
 		refillRate: refillRate,
 		tokens:     float64(capacity),
@@ -25,20 +32,29 @@ func NewTokenBucket(capacity int, refillRate float64) *TokenBucket {
 	}
 	return Bucket
 }
+func NewTokenBucket(capacity int, refillRate float64) *TokenBucket {
+	return newTokenBucket(capacity, refillRate, nil)
+}
 
-func (bucket *TokenBucket) Allow(n int) bool {
-	if n < 0 {
-		return false
-	}
+func (bucket *TokenBucket) Allow(n int) Result {
 	bucket.mu.Lock()
 	defer bucket.mu.Unlock()
-	timeSinceLastRefill := (bucket.nowFunc().Sub(bucket.lastRefill)).Seconds()
-	tokens := min(bucket.tokens+(timeSinceLastRefill*bucket.refillRate), float64(bucket.capacity))
+	if n <= 0 || bucket.capacity < n {
+		return Result{true, false, time.Unix(1<<63-1, 0)}
+	}
+	lastRequestWasAt := bucket.lastRefill
 	bucket.lastRefill = bucket.nowFunc()
+	timeSinceLastRefill := (bucket.lastRefill.Sub(lastRequestWasAt)).Seconds()
+	tokens := min(bucket.tokens+(timeSinceLastRefill*bucket.refillRate), float64(bucket.capacity))
 	bucket.tokens = tokens
 	if float64(n) > bucket.tokens {
-		return false
+		if bucket.refillRate == 0 {
+			return Result{false, false, time.Unix(1<<63-1, 0)}
+		}
+		retryAfter := ((float64(n) - bucket.tokens) / bucket.refillRate) * 1000000000
+		waitTill := bucket.lastRefill.Add(time.Duration(retryAfter))
+		return Result{false, false, waitTill}
 	}
 	bucket.tokens -= float64(n)
-	return true
+	return Result{false, true, bucket.lastRefill}
 }

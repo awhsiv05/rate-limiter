@@ -2,6 +2,7 @@ package limiter
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -88,7 +89,7 @@ func TestNeverExceedsCapacity(t *testing.T) {
 
 	result = testBucket.Allow(1)
 	if result.BadRequest || result.Allowed {
-		t.Errorf("Allowed expected : %v | got : %v \n BadRequest expected : %v | got : %v \n ", true, result.Allowed, false, result.BadRequest)
+		t.Errorf("Allowed expected : %v | got : %v \n BadRequest expected : %v | got : %v \n ", false, result.Allowed, false, result.BadRequest)
 	}
 }
 func TestZeroAndNegative(t *testing.T) {
@@ -121,7 +122,7 @@ func TestZeroAndNegative(t *testing.T) {
 func TestRetryAfter(t *testing.T) {
 	fakeClock := NewFakeClock(time.Unix(0, 0))
 	initialTime := fakeClock.Now()
-	testBucket := newTestBucket(5, 1, fakeClock)
+	testBucket := newTestBucket(5, 2, fakeClock)
 
 	Tests := []struct {
 		name        string
@@ -132,10 +133,10 @@ func TestRetryAfter(t *testing.T) {
 		forwardTime time.Duration
 	}{
 		{"Burst up to capacity ", 5, false, true, initialTime, 0},
-		{"RetryAfter for 1 token", 1, false, false, initialTime.Add(1 * time.Second), 0},
-		{"RetryAfter for 2 token", 2, false, false, initialTime.Add(2 * time.Second), 0},
-		{"RetryAfter for 3 token", 3, false, false, initialTime.Add(3 * time.Second), 2 * time.Second},
-		{"RetryAfter for 2 token after wait", 2, false, true, initialTime.Add(2 * time.Second), 0},
+		{"RetryAfter for 1 token", 1, false, false, initialTime.Add(500 * time.Millisecond), 0},
+		{"RetryAfter for 2 token", 2, false, false, initialTime.Add(1 * time.Second), 0},
+		{"RetryAfter for 3 token", 3, false, false, initialTime.Add(1500 * time.Millisecond), 500 * time.Millisecond},
+		{"RetryAfter for 1 token after wait", 1, false, true, initialTime.Add(500 * time.Millisecond), 0},
 	}
 
 	for _, test := range Tests {
@@ -149,15 +150,25 @@ func TestRetryAfter(t *testing.T) {
 	}
 }
 
+// unreliable test use -race condition.
 func TestRaceCondition(t *testing.T) {
-	testBucket := NewTokenBucket(5, 1)
+	testBucket := NewTokenBucket(1000, 0)
+	var count atomic.Int32
 	var wg sync.WaitGroup
-	wg.Add(1000)
-	for range 1000 {
+
+	wg.Add(2000)
+	for range 2000 {
 		go func() {
 			defer wg.Done()
-			testBucket.Allow(1)
+			res := testBucket.Allow(1)
+			if res.Allowed {
+				count.Add(1)
+			}
 		}()
 	}
+
 	wg.Wait()
+	if count.Load() != 1000 {
+		t.Errorf("got %d, want %d", count.Load(), 1000)
+	}
 }

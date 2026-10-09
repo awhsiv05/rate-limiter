@@ -32,9 +32,11 @@ func TestIndependenceCondition(t *testing.T) {
 	key1 := "1"
 	key2 := "2"
 	res1 := store.Allow(key1, 100)
-	res2 := store.Allow(key2, 100)
+	res2 := store.Allow(key1, 100)
+	res3 := store.Allow(key2, 100)
+	res4 := store.Allow(key2, 100)
 
-	if res1.Allowed && !res2.Allowed {
+	if !(res1.Allowed && !res2.Allowed && res3.Allowed && !res4.Allowed) {
 		t.Errorf("key2 denied after key1 is drained ")
 	}
 }

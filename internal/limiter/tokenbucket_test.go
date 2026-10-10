@@ -9,16 +9,21 @@ import (
 
 type FakeClock struct {
 	currentTime time.Time
+	mu          sync.Mutex
 }
 
 func NewFakeClock(t time.Time) *FakeClock {
-	return &FakeClock{currentTime: t}
+	return &FakeClock{currentTime: t, mu: sync.Mutex{}}
 }
 
 func (f *FakeClock) Now() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.currentTime
 }
 func (f *FakeClock) Advance(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.currentTime = f.currentTime.Add(d)
 }
 

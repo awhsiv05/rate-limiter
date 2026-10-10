@@ -51,7 +51,7 @@ func (bucket *TokenBucket) Allow(n int) Result {
 		if bucket.refillRate == 0 {
 			return Result{false, false, time.Unix(1<<63-1, 0)}
 		}
-		retryAfter := ((float64(n) - bucket.tokens) / bucket.refillRate) * 1000000000
+		retryAfter := 1000000000 * ((float64(n) - bucket.tokens) / bucket.refillRate)
 		waitTill := bucket.lastAccess.Add(time.Duration(retryAfter))
 		return Result{false, false, waitTill}
 	}

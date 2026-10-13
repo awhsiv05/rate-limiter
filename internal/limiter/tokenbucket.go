@@ -14,10 +14,13 @@ type TokenBucket struct {
 	nowFunc    func() time.Time
 }
 type Result struct {
-	BadRequest bool
 	Allowed    bool
-	WaitTill   time.Time
+	TokensLeft float64
+	RetryAfter time.Duration
 }
+
+var ErrInvalidTokensNonPositive = errors.New("tokens should be greater than zero")
+var ErrInvalidTokensExcessive = errors.New("tokens requested exceeds capacity")
 
 func newTokenBucket(capacity int, refillRate float64, nowFunc func() time.Time) *TokenBucket {
 	if nowFunc == nil {
@@ -32,15 +35,15 @@ func newTokenBucket(capacity int, refillRate float64, nowFunc func() time.Time) 
 	}
 	return Bucket
 }
-func NewTokenBucket(capacity int, refillRate float64) *TokenBucket {
-	return newTokenBucket(capacity, refillRate, nil)
-}
 
-func (bucket *TokenBucket) Allow(n int) Result {
+func (bucket *TokenBucket) Allow(n int) (Result, error) {
 	bucket.mu.Lock()
 	defer bucket.mu.Unlock()
-	if n <= 0 || bucket.capacity < n {
-		return Result{true, false, time.Unix(1<<63-1, 0)}
+	if n <= 0 {
+		return Result{}, ErrInvalidTokensNonPositive
+	}
+	if n > bucket.capacity {
+		return Result{}, ErrInvalidTokensExcessive
 	}
 	lastRequestWasAt := bucket.lastAccess
 	bucket.lastAccess = bucket.nowFunc()
@@ -48,13 +51,9 @@ func (bucket *TokenBucket) Allow(n int) Result {
 	tokens := min(bucket.tokens+(timeSinceLastRefill*bucket.refillRate), float64(bucket.capacity))
 	bucket.tokens = tokens
 	if float64(n) > bucket.tokens {
-		if bucket.refillRate == 0 {
-			return Result{false, false, time.Unix(1<<63-1, 0)}
-		}
-		retryAfter := 1000000000 * ((float64(n) - bucket.tokens) / bucket.refillRate)
-		waitTill := bucket.lastAccess.Add(time.Duration(retryAfter))
-		return Result{false, false, waitTill}
+		retryAfter := time.Duration(((float64(n)-bucket.tokens)/bucket.refillRate )*seconds)
+		return Result{false, bucket.tokens, retryAfter}, nil
 	}
 	bucket.tokens -= float64(n)
-	return Result{false, true, bucket.lastAccess}
+	return Result{true, bucket.tokens, 0}, nil
 }

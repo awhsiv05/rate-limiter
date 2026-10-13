@@ -1,6 +1,7 @@
 package limiter
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -47,7 +48,10 @@ func TestAllow_BurstThenDenied(t *testing.T) {
 
 	for _, test := range Tests {
 		t.Run(test.name, func(t *testing.T) {
-			actual := testBucket.Allow(test.n)
+			actual, err := testBucket.Allow(test.n)
+			if err != nil {
+				t.Errorf("%v", err)
+			}
 			fakeClock.Advance(test.forwardTime)
 			if actual.Allowed != test.expected {
 				t.Errorf("got %t, want %t,capacity %f", actual.Allowed, test.expected, testBucket.tokens)
@@ -73,7 +77,12 @@ func TestRefillAfterOneSecond(t *testing.T) {
 
 	for _, test := range Tests {
 		t.Run(test.name, func(t *testing.T) {
-			actual := testBucket.Allow(test.n)
+
+			actual, err := testBucket.Allow(test.n)
+			if err != nil {
+				t.Errorf("%v", err)
+			}
+
 			fakeClock.Advance(test.forwardTime)
 			if actual.Allowed != test.expected {
 				t.Errorf("got %t, want %t,capacity %f", actual.Allowed, test.expected, testBucket.tokens)
@@ -87,38 +96,45 @@ func TestNeverExceedsCapacity(t *testing.T) {
 	testBucket := newTestBucket(5, 1, fakeClock)
 
 	fakeClock.Advance(100 * time.Second)
-	result := testBucket.Allow(5)
-	if result.BadRequest || !result.Allowed {
-		t.Errorf("Allowed expected : %v | got : %v \n BadRequest expected : %v | got : %v \n ", true, result.Allowed, false, result.BadRequest)
+
+	result, err := testBucket.Allow(5)
+	if err != nil {
+		t.Errorf("%v", err)
+	}
+	if !result.Allowed {
+		t.Errorf("Allowed expected : %v | got : %v  ", true, result.Allowed)
 	}
 
-	result = testBucket.Allow(1)
-	if result.BadRequest || result.Allowed {
-		t.Errorf("Allowed expected : %v | got : %v \n BadRequest expected : %v | got : %v \n ", false, result.Allowed, false, result.BadRequest)
+	result, err = testBucket.Allow(1)
+	if err != nil {
+		t.Errorf("%v", err)
+	}
+	if result.Allowed {
+		t.Errorf("Allowed expected : %v | got : %v \n  ", false, result.Allowed)
 	}
 }
 func TestZeroAndNegative(t *testing.T) {
 	fakeClock := NewFakeClock(time.Unix(0, 0))
 	testBucket := newTestBucket(5, 1, fakeClock)
-
 	Tests := []struct {
-		name        string
-		n           int
-		badRequest  bool
-		expected    bool
-		forwardTime time.Duration
+		name     string
+		n        int
+		expected bool
+		err      error
 	}{
-		{"0 allow", 0, true, false, 0},
-		{"-ve allow", -1, true, false, 0},
-		{"n > capacity ", 1000, true, false, 0},
+		{"0 allow", 0, false, ErrInvalidTokensNonPositive},
+		{"-ve allow", -1, false, ErrInvalidTokensNonPositive},
+		{"n > capacity ", 1000, false, ErrInvalidTokensExcessive},
 	}
 
 	for _, test := range Tests {
 		t.Run(test.name, func(t *testing.T) {
-			actual := testBucket.Allow(test.n)
-			fakeClock.Advance(test.forwardTime)
-			if actual.BadRequest != test.badRequest || actual.Allowed != test.expected {
-				t.Errorf("Allowed expected : %v | got : %v \n BadRequest expected : %v | got : %v \n ", test.expected, actual.Allowed, test.badRequest, actual.BadRequest)
+			actual, err := testBucket.Allow(test.n)
+			if !errors.Is(err, test.err) {
+				t.Errorf("got %v, want %v", err, test.err)
+			}
+			if actual.Allowed != test.expected {
+				t.Errorf("Allowed expected : %v | got : %v \n ", test.expected, actual.Allowed)
 			}
 		})
 	}
@@ -126,30 +142,32 @@ func TestZeroAndNegative(t *testing.T) {
 
 func TestRetryAfter(t *testing.T) {
 	fakeClock := NewFakeClock(time.Unix(0, 0))
-	initialTime := fakeClock.Now()
 	testBucket := newTestBucket(5, 2, fakeClock)
 
 	Tests := []struct {
 		name        string
 		n           int
-		badRequest  bool
 		expected    bool
-		retryAfter  time.Time
+		retryAfter  time.Duration
 		forwardTime time.Duration
 	}{
-		{"Burst up to capacity ", 5, false, true, initialTime, 0},
-		{"RetryAfter for 1 token", 1, false, false, initialTime.Add(500 * time.Millisecond), 0},
-		{"RetryAfter for 2 token", 2, false, false, initialTime.Add(1 * time.Second), 0},
-		{"RetryAfter for 3 token", 3, false, false, initialTime.Add(1500 * time.Millisecond), 500 * time.Millisecond},
-		{"RetryAfter for 1 token after wait", 1, false, true, initialTime.Add(500 * time.Millisecond), 0},
+		{"Burst up to capacity ", 5, true, 0, 0},
+		{"RetryAfter for 1 token", 1, false, 500 * time.Millisecond, 0},
+		{"RetryAfter for 2 token", 2, false, 1 * time.Second, 0},
+		{"RetryAfter for 3 token", 3, false, 1500 * time.Millisecond, 500 * time.Millisecond},
+		{"RetryAfter for 1 token after wait", 1, true, 0, 0},
 	}
 
 	for _, test := range Tests {
 		t.Run(test.name, func(t *testing.T) {
-			actual := testBucket.Allow(test.n)
+
+			actual, err := testBucket.Allow(test.n)
+			if err != nil {
+				t.Errorf("%v", err)
+			}
 			fakeClock.Advance(test.forwardTime)
-			if actual.BadRequest != test.badRequest || actual.Allowed != test.expected || actual.WaitTill != test.retryAfter {
-				t.Errorf("Allowed expected : %v | got : %v \n BadRequest expected : %v | got : %v \n RetryAfter expected : %v | got : %v \n", test.expected, actual.Allowed, test.badRequest, actual.BadRequest, test.retryAfter, actual.WaitTill)
+			if actual.Allowed != test.expected || actual.RetryAfter != test.retryAfter {
+				t.Errorf("Allowed expected : %v | got : %v \n RetryAfter expected : %v | got : %v \n", test.expected, actual.Allowed, test.retryAfter, actual.RetryAfter)
 			}
 		})
 	}
@@ -157,16 +175,20 @@ func TestRetryAfter(t *testing.T) {
 
 // unreliable test use -race condition.
 func TestRaceCondition(t *testing.T) {
-	testBucket := NewTokenBucket(1000, 0)
+	fakeClock := NewFakeClock(time.Unix(0, 0))
+	testBucket := newTokenBucket(1000, 1, fakeClock.Now)
 	var count atomic.Int32
 	var wg sync.WaitGroup
-
 	wg.Add(2000)
 	for range 2000 {
 		go func() {
 			defer wg.Done()
-			res := testBucket.Allow(1)
-			if res.Allowed {
+
+			res, err := testBucket.Allow(1)
+			if err != nil {
+				t.Errorf("%v", err)
+			}
+			if res.Allowed == true {
 				count.Add(1)
 			}
 		}()
@@ -174,6 +196,11 @@ func TestRaceCondition(t *testing.T) {
 
 	wg.Wait()
 	if count.Load() != 1000 {
+		res, err := testBucket.Allow(1)
+		if err != nil {
+			t.Errorf("%v", err)
+		}
+		t.Errorf("%v", res)
 		t.Errorf("got %d, want %d", count.Load(), 1000)
 	}
 }

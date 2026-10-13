@@ -19,7 +19,10 @@ func TestStorageRaceCondition(t *testing.T) {
 	for range 200 {
 		go func() {
 			defer wg.Done()
-			res := store.Allow(key, 1)
+			res, err := store.Allow(key, 1)
+			if err != nil {
+				t.Errorf("%v", err)
+			}
 			if res.Allowed {
 				count.Add(1)
 			}
@@ -55,11 +58,14 @@ func TestEvictor(t *testing.T) {
 	fakeClock := NewFakeClock(time.Unix(0, 0))
 	store, err := newStore(100, 1, fakeClock.Now, 100*time.Second)
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
 	}
 	key1 := "A"
 	key2 := "B"
-	res1 := store.Allow(key1, 100)
+	res1, err := store.Allow(key1, 100)
+	if err != nil {
+		t.Error(err)
+	}
 	if !res1.Allowed {
 		t.Errorf("key1 denied")
 	}
@@ -68,7 +74,10 @@ func TestEvictor(t *testing.T) {
 	if cnt != 0 {
 		t.Errorf("got %d, want 0", cnt)
 	}
-	res2 := store.Allow(key2, 100)
+	res2, err := store.Allow(key2, 100)
+	if err != nil {
+		t.Error(err)
+	}
 	if !res2.Allowed {
 		t.Errorf("key2 denied")
 	}
@@ -78,7 +87,10 @@ func TestEvictor(t *testing.T) {
 		t.Errorf("got %d, want 1", cnt)
 	}
 	key3 := "C"
-	res3 := store.Allow(key3, 100)
+	res3, err := store.Allow(key3, 100)
+	if err != nil {
+		t.Error(err)
+	}
 	if !res3.Allowed {
 		t.Errorf("key3 denied")
 	}
@@ -86,6 +98,9 @@ func TestEvictor(t *testing.T) {
 	cnt = store.evictorIdle(fakeClock.Now())
 	_, key2Exists := store.tokenBuckets[key2]
 	if key2Exists {
+		t.Errorf("Wrong Key Deleted : %s", key2)
+	}
+	if _, key3Exists := store.tokenBuckets[key3]; !key3Exists {
 		t.Errorf("Wrong Key Deleted : %s", key3)
 	}
 	if cnt != 1 {

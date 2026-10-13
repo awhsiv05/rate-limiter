@@ -6,6 +6,12 @@ import (
 	"time"
 )
 
+var ErrRefillRateNonPositive = errors.New("refill rate must be positive")
+var ErrInvalidInterval = errors.New("invalid interval")
+var ErrInvalidTTL = errors.New("invalid ttl")
+var ErrCapacityNonPositive = errors.New("capacity must be positive")
+var ErrTTLNonPositive = errors.New("ttl must be positive")
+
 type Store struct {
 	tokenBuckets map[string]*TokenBucket
 	lastUsed     map[string]time.Time
@@ -18,23 +24,21 @@ type Store struct {
 
 func NewStore(capacity int, refillRate float64, timeToLive time.Duration) (*Store, error) {
 	if capacity <= 0 {
-		return nil, errors.New("capacity must be positive")
+		return nil, ErrCapacityNonPositive
 	}
 	if refillRate <= 0 {
-		return nil, errors.New("refillRate must be positive")
+		return nil, ErrRefillRateNonPositive
 	}
 	if timeToLive <= 0 {
-		return nil, errors.New("timeToLive must be positive")
+		return nil, ErrTTLNonPositive
 	}
 	return newStore(capacity, refillRate, time.Now, timeToLive)
 }
 func newStore(capacity int, refillRate float64, nowFunc func() time.Time, timeToLive time.Duration) (*Store, error) {
-	var expectedTTL time.Duration = 0
-	if refillRate != 0 {
-		expectedTTL = time.Duration((float64(capacity) / refillRate) * 1000000000)
-	}
+	var expectedTTL = time.Duration((float64(capacity) / refillRate) * seconds)
+
 	if timeToLive < expectedTTL {
-		return nil, errors.New("TTL shorter then minimum " + "given TTL : " + timeToLive.String() + " Minimum Expected TTL : " + expectedTTL.String())
+		return nil, ErrInvalidTTL
 	}
 	return &Store{tokenBuckets: make(map[string]*TokenBucket),
 		lastUsed:   make(map[string]time.Time),
@@ -45,9 +49,12 @@ func newStore(capacity int, refillRate float64, nowFunc func() time.Time, timeTo
 		timeToLive: timeToLive}, nil
 }
 
-func (s *Store) Allow(key string, n int) Result {
+func (s *Store) Allow(key string, n int) (Result, error) {
 	if n <= 0 {
-		return Result{false, false, time.Unix(1<<63-1, 0)}
+		return Result{}, ErrInvalidTokensNonPositive
+	}
+	if n > s.capacity {
+		return Result{}, ErrInvalidTokensExcessive
 	}
 	s.mu.Lock()
 	if s.tokenBuckets[key] == nil {
@@ -56,13 +63,13 @@ func (s *Store) Allow(key string, n int) Result {
 	tokenBucket := s.tokenBuckets[key]
 	s.lastUsed[key] = s.nowFunc()
 	s.mu.Unlock()
-	result := tokenBucket.Allow(n)
-	return result
+
+	return tokenBucket.Allow(n)
 }
 
 func (s *Store) StartCleanup(interval time.Duration) (func(), error) {
 	if interval <= 0 {
-		return nil, errors.New("interval must be positive")
+		return nil, ErrInvalidInterval
 	}
 	var stopCh = make(chan struct{})
 	var done = make(chan struct{})

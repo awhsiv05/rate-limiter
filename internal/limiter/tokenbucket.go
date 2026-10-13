@@ -1,10 +1,12 @@
 package limiter
 
 import (
+	"errors"
 	"sync"
 	"time"
 )
 
+var seconds float64 = float64(time.Second)
 type TokenBucket struct {
 	capacity   int
 	refillRate float64 // assuming in per seconds

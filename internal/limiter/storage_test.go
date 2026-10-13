@@ -1,16 +1,34 @@
 package limiter
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-func TestStorageRaceCondition(t *testing.T) {
-	store, err := newStore(100, 0, time.Now, 100)
+func TestStoreBucketCreation(t *testing.T) {
+	store, err := NewStore(100, 1, 150*time.Second)
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
+	}
+	key := "A"
+	_, err = store.Allow(key, 0)
+	if err == nil || !errors.Is(err, ErrInvalidTokensNonPositive) {
+		t.Errorf("error should be %v got : %v", ErrInvalidTokensNonPositive, err)
+	}
+	_, err = store.Allow(key, 1000)
+	if err == nil || !errors.Is(err, ErrInvalidTokensExcessive) {
+		t.Errorf("error should be %v got : %v", ErrInvalidTokensExcessive, err)
+	}
+}
+
+func TestStorageRaceCondition(t *testing.T) {
+	fakeClock := NewFakeClock(time.Unix(0, 0))
+	store, err := newStore(100, 1, fakeClock.Now, 100*time.Second)
+	if err != nil {
+		t.Error(err)
 	}
 	var count atomic.Int32
 	var wg sync.WaitGroup
@@ -34,22 +52,41 @@ func TestStorageRaceCondition(t *testing.T) {
 	}
 }
 
-// doesn't matter
 func TestIndependenceCondition(t *testing.T) {
-	store, err := newStore(100, 0, time.Now, 100)
+	fakeClock := NewFakeClock(time.Unix(0, 0))
+	store, err := newStore(100, 1, fakeClock.Now, 100*time.Second)
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
 	}
-	// fix the Conditions later
 	key1 := "1"
 	key2 := "2"
-	res1 := store.Allow(key1, 100)
-	res2 := store.Allow(key1, 100)
-	res3 := store.Allow(key2, 100)
-	res4 := store.Allow(key2, 100)
-
-	if !(res1.Allowed && !res2.Allowed && res3.Allowed && !res4.Allowed) {
-		t.Errorf("key2 denied after key1 is drained ")
+	res1, err := store.Allow(key1, 100)
+	if err != nil {
+		t.Error(err)
+	}
+	res2, err := store.Allow(key1, 100)
+	if err != nil {
+		t.Error(err)
+	}
+	res3, err := store.Allow(key2, 100)
+	if err != nil {
+		t.Error(err)
+	}
+	res4, err := store.Allow(key2, 100)
+	if err != nil {
+		t.Error(err)
+	}
+	if !(res1.Allowed) {
+		t.Errorf("key1 should be allowed as Not drained yet")
+	}
+	if res1.Allowed && res2.Allowed {
+		t.Errorf("bucket with Key1 not drained")
+	}
+	if res3.Allowed && res4.Allowed {
+		t.Errorf("bucket with Key2 not drained")
+	}
+	if res1.Allowed && !res2.Allowed && !res3.Allowed {
+		t.Errorf("bucket with Key1 drained and bucket with Key2 Denied without draining")
 	}
 }
 
@@ -108,20 +145,34 @@ func TestEvictor(t *testing.T) {
 	}
 }
 
-func TestStore_StartCleanup(t *testing.T) {
+func TestStore_StopCleanup(t *testing.T) {
 	store, err := NewStore(100, 1, 100*time.Second)
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
 	}
 	key1 := "1"
-	res1 := store.Allow(key1, 100)
+	res1, err := store.Allow(key1, 100)
+	if err != nil {
+		t.Errorf("%v", err)
+	}
 	if !res1.Allowed {
 		t.Errorf("key1 denied")
 	}
-	stop , err:= store.StartCleanup(10 * time.Millisecond)
+	stop, err := store.StartCleanup(10 * time.Millisecond)
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
 	}
 	stop()
 	stop()
+}
+
+func TestStore_StartCleanup(t *testing.T) {
+	store, err := NewStore(100, 1, 100*time.Second)
+	if err != nil {
+		t.Error(err)
+	}
+	_, err = store.StartCleanup(0 * time.Millisecond)
+	if errors.Is(err, ErrCapacityNonPositive) {
+		t.Errorf("error should be %v got : %v", ErrCapacityNonPositive, err)
+	}
 }
